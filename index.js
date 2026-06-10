@@ -2,6 +2,7 @@ const mineflayer = require('mineflayer');
 const express = require('express');
 const fs = require('fs');
 const path = require('path');
+const { Vec3 } = require('vec3');
 
 // Read settings
 let settings = {
@@ -73,7 +74,7 @@ function startAntiAFK() {
   if (antiAFKInterval) clearInterval(antiAFKInterval);
 
   antiAFKInterval = setInterval(() => {
-    if (botStatus !== 'Connected' || !bot.entity || bot.isSleeping) return;
+    if (botStatus !== 'Connected' || !bot.entity || bot.isSleeping || isTransitioningSleep) return;
 
     // Random action selection
     const action = Math.random();
@@ -104,8 +105,74 @@ function startAntiAFK() {
   }, 10000 + Math.random() * 10000); // Perform random actions every 10-20 seconds
 }
 
+// Helper to check if a block is solid
+function isSolid(block) {
+  return block && block.boundingBox === 'block' && block.name !== 'air';
+}
+
+// Helper to check if a block is replaceable (e.g. air, grass)
+function isReplaceable(block) {
+  if (!block) return true;
+  if (block.name === 'air' || block.name.includes('air') || block.name === 'void_air' || block.name === 'cave_air') return true;
+  const replaceable = ['tall_grass', 'short_grass', 'grass', 'fern', 'dandelion', 'poppy', 'blue_orchid', 'allium', 'azure_bluet', 'red_tulip', 'orange_tulip', 'white_tulip', 'pink_tulip', 'oxeye_daisy', 'cornflower', 'lily_of_the_valley', 'wither_rose', 'sunflower', 'lilac', 'rose_bush', 'peony', 'snow', 'sweet_berry_bush'];
+  return replaceable.includes(block.name);
+}
+
 // Auto-sleep behavior at night
 let autoSleepInterval;
+let placedBedPosition = null;
+let isTransitioningSleep = false;
+
+// Scan surrounding area for a valid bed placement site
+function findBedPlacement() {
+  const basePos = bot.entity.position.floored().offset(0, -1, 0);
+  const searchOffsets = [
+    { dx: 0, dz: 0 }, // Under bot feet
+    { dx: 1, dz: 0 },
+    { dx: -1, dz: 0 },
+    { dx: 0, dz: 1 },
+    { dx: 0, dz: -1 },
+    { dx: 1, dz: 1 },
+    { dx: -1, dz: 1 },
+    { dx: 1, dz: -1 },
+    { dx: -1, dz: -1 }
+  ];
+
+  const directions = [
+    { dir: new Vec3(0, 0, -1), yaw: Math.PI },       // North
+    { dir: new Vec3(0, 0, 1), yaw: 0 },              // South
+    { dir: new Vec3(1, 0, 0), yaw: -Math.PI / 2 },    // East
+    { dir: new Vec3(-1, 0, 0), yaw: Math.PI / 2 }     // West
+  ];
+
+  for (const offset of searchOffsets) {
+    const floorPos = basePos.offset(offset.dx, 0, offset.dz);
+    const floorBlock = bot.blockAt(floorPos);
+    if (!isSolid(floorBlock)) continue;
+
+    const footSpace = bot.blockAt(floorPos.offset(0, 1, 0));
+    const footSpaceAbove = bot.blockAt(floorPos.offset(0, 2, 0));
+    if (!isReplaceable(footSpace) || !isReplaceable(footSpaceAbove)) continue;
+
+    for (const d of directions) {
+      const headFloorPos = floorPos.plus(d.dir);
+      const headFloorBlock = bot.blockAt(headFloorPos);
+      if (!isSolid(headFloorBlock)) continue;
+
+      const headSpace = bot.blockAt(headFloorPos.offset(0, 1, 0));
+      const headSpaceAbove = bot.blockAt(headFloorPos.offset(0, 2, 0));
+      if (!isReplaceable(headSpace) || !isReplaceable(headSpaceAbove)) continue;
+
+      return {
+        referenceBlock: floorBlock,
+        yaw: d.yaw,
+        direction: d.dir
+      };
+    }
+  }
+  return null;
+}
+
 function startAutoSleep() {
   if (autoSleepInterval) clearInterval(autoSleepInterval);
 
@@ -116,27 +183,107 @@ function startAutoSleep() {
     const timeOfDay = bot.time.timeOfDay;
     const isNight = timeOfDay >= 12541 && timeOfDay <= 23458;
 
-    if (isNight && !bot.isSleeping) {
-      // Find a bed within 5 blocks
-      const bedBlock = bot.findBlock({
-        matching: (block) => bot.isABed(block),
-        maxDistance: 5
-      });
+    if (isNight && !bot.isSleeping && !isTransitioningSleep) {
+      isTransitioningSleep = true;
+      try {
+        // 1. Try to find an existing bed within 5 blocks
+        let bedBlock = bot.findBlock({
+          matching: (block) => bot.isABed(block),
+          maxDistance: 5
+        });
 
-      if (bedBlock) {
-        try {
+        // 2. If no bed is found, place one
+        if (!bedBlock) {
+          console.log('No bed found nearby. Attempting to place one...');
+          const mcData = bot.registry;
+          const Item = require('prismarine-item')(bot.registry);
+
+          // Find if we have a bed in inventory
+          let bedItem = bot.inventory.items().find(item => item.name.includes('bed'));
+          if (!bedItem) {
+            if (bot.game.gameMode === 'creative') {
+              console.log('No bed in inventory. Manifesting one in creative mode...');
+              const redBedId = mcData.itemsByName['red_bed'].id;
+              // Set hotbar slot 0 (index 36) to a Red Bed
+              await bot.creative.setInventorySlot(36, new Item(redBedId, 1));
+              await new Promise(resolve => setTimeout(resolve, 500));
+              bedItem = bot.inventory.items().find(item => item.name === 'red_bed');
+            } else {
+              throw new Error('No bed found in inventory (and not in creative mode).');
+            }
+          }
+
+          if (!bedItem) {
+            throw new Error('Could not obtain bed item.');
+          }
+
+          // Equip the bed item
+          await bot.equip(bedItem, 'hand');
+          await new Promise(resolve => setTimeout(resolve, 200));
+
+          // Find a valid placement spot
+          const placement = findBedPlacement();
+          if (!placement) {
+            throw new Error('No suitable solid ground or clear space to place bed.');
+          }
+
+          console.log(`Found bed placement block at ${placement.referenceBlock.position}. Facing yaw: ${placement.yaw}`);
+          
+          // Face the correct direction for placement (so the bed head goes the right way)
+          await bot.look(placement.yaw, -Math.PI / 4, true);
+          await new Promise(resolve => setTimeout(resolve, 300));
+
+          // Place the bed on top of reference block
+          await bot.placeBlock(placement.referenceBlock, new Vec3(0, 1, 0));
+          await new Promise(resolve => setTimeout(resolve, 500));
+
+          // Find the newly placed bed
+          bedBlock = bot.findBlock({
+            matching: (block) => bot.isABed(block),
+            maxDistance: 4
+          });
+
+          if (bedBlock) {
+            placedBedPosition = bedBlock.position;
+            console.log(`Successfully placed bed at ${placedBedPosition}`);
+          } else {
+            throw new Error('Placed bed block but could not locate it in world.');
+          }
+        }
+
+        // 3. Sleep in the bed
+        if (bedBlock) {
+          console.log('Attempting to sleep in bed...');
           await bot.sleep(bedBlock);
           console.log('Bot is now sleeping in bed.');
-        } catch (err) {
-          console.warn('Failed to sleep:', err.message);
         }
-      }
-    } else if (!isNight && bot.isSleeping) {
-      try {
-        await bot.wake();
-        console.log('Bot woke up.');
       } catch (err) {
-        console.warn('Failed to wake up:', err.message);
+        console.warn('Auto-sleep attempt failed:', err.message);
+      } finally {
+        isTransitioningSleep = false;
+      }
+    } else if (!isNight && (bot.isSleeping || placedBedPosition)) {
+      // Morning has arrived! Wake up and break the placed bed
+      try {
+        if (bot.isSleeping) {
+          console.log('Morning arrived. Waking up...');
+          await bot.wake();
+          console.log('Bot woke up.');
+          await new Promise(resolve => setTimeout(resolve, 500));
+        }
+
+        if (placedBedPosition) {
+          const bedBlock = bot.blockAt(placedBedPosition);
+          if (bedBlock && bot.isABed(bedBlock)) {
+            console.log('Attempting to break the placed bed...');
+            await bot.lookAt(bedBlock.position.offset(0.5, 0.5, 0.5));
+            await bot.dig(bedBlock);
+            console.log('Broke the placed bed.');
+          }
+          placedBedPosition = null;
+        }
+      } catch (err) {
+        console.warn('Failed to wake up or break bed:', err.message);
       }
     }
   }, 10000); // Check every 10 seconds
