@@ -256,7 +256,7 @@ async function escapeWater() {
   return false;
 }
 
-// Scan surrounding area for a valid bed placement site (excluding directly under bot feet)
+// Scan surrounding area for a valid bed placement site (excluding directly under bot feet, checking adjacent heights)
 function findBedPlacement() {
   const basePos = bot.entity.position.floored().offset(0, -1, 0);
   const searchOffsets = [
@@ -277,29 +277,32 @@ function findBedPlacement() {
     { dir: new Vec3(-1, 0, 0), yaw: Math.PI / 2 }     // West
   ];
 
-  for (const offset of searchOffsets) {
-    const floorPos = basePos.offset(offset.dx, 0, offset.dz);
-    const floorBlock = bot.blockAt(floorPos);
-    if (!isSolid(floorBlock)) continue;
+  // Try same level, 1 block higher, then 1 block lower
+  for (const dy of [0, 1, -1]) {
+    for (const offset of searchOffsets) {
+      const floorPos = basePos.offset(offset.dx, dy, offset.dz);
+      const floorBlock = bot.blockAt(floorPos);
+      if (!isSolid(floorBlock) || floorBlock.name === 'water' || floorBlock.name === 'flowing_water') continue;
 
-    const footSpace = bot.blockAt(floorPos.offset(0, 1, 0));
-    const footSpaceAbove = bot.blockAt(floorPos.offset(0, 2, 0));
-    if (!isReplaceable(footSpace) || !isReplaceable(footSpaceAbove)) continue;
+      const footSpace = bot.blockAt(floorPos.offset(0, 1, 0));
+      const footSpaceAbove = bot.blockAt(floorPos.offset(0, 2, 0));
+      if (!isReplaceable(footSpace) || !isReplaceable(footSpaceAbove)) continue;
 
-    for (const d of directions) {
-      const headFloorPos = floorPos.plus(d.dir);
-      const headFloorBlock = bot.blockAt(headFloorPos);
-      if (!isSolid(headFloorBlock)) continue;
+      for (const d of directions) {
+        const headFloorPos = floorPos.plus(d.dir);
+        const headFloorBlock = bot.blockAt(headFloorPos);
+        if (!isSolid(headFloorBlock) || headFloorBlock.name === 'water' || headFloorBlock.name === 'flowing_water') continue;
 
-      const headSpace = bot.blockAt(headFloorPos.offset(0, 1, 0));
-      const headSpaceAbove = bot.blockAt(headFloorPos.offset(0, 2, 0));
-      if (!isReplaceable(headSpace) || !isReplaceable(headSpaceAbove)) continue;
+        const headSpace = bot.blockAt(headFloorPos.offset(0, 1, 0));
+        const headSpaceAbove = bot.blockAt(headFloorPos.offset(0, 2, 0));
+        if (!isReplaceable(headSpace) || !isReplaceable(headSpaceAbove)) continue;
 
-      return {
-        referenceBlock: floorBlock,
-        yaw: d.yaw,
-        direction: d.dir
-      };
+        return {
+          referenceBlock: floorBlock,
+          yaw: d.yaw,
+          direction: d.dir
+        };
+      }
     }
   }
   return null;
@@ -322,11 +325,17 @@ function startAutoSleep() {
         const currentBlock = bot.blockAt(bot.entity.position);
         const inWater = bot.entity.isInWater || (currentBlock && (currentBlock.name === 'water' || currentBlock.name === 'flowing_water'));
         if (inWater) {
-          // Swim to surface first so we can activate flight or navigate cleanly
-          await swimToSurface();
-          const escaped = await escapeWater();
-          if (!escaped) {
-            throw new Error('Failed to escape water. Skipping sleep this attempt.');
+          if (bot.game.gameMode === 'creative') {
+            console.log('Bot is in water and in Creative Mode. Relocating directly to dry land...');
+            const landPos = findDryLand();
+            if (landPos) {
+              bot.entity.position = new Vec3(landPos.x, landPos.y + 0.5, landPos.z);
+              await new Promise(resolve => setTimeout(resolve, 500)); // wait for position to sync
+            }
+          } else {
+            // Survival mode: swim up to surface, then swim to land
+            await swimToSurface();
+            await escapeWater();
           }
         }
 
