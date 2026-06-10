@@ -447,7 +447,7 @@ createBot();
 
 // Web Server for Status Dashboard & Ping Keep-Alive
 const app = express();
-const port = process.env.PORT || 3000;
+const port = process.env.PORT || 7860;
 
 app.get('/', (req, res) => {
   const uptimeSeconds = Math.floor((Date.now() - startTime) / 1000);
