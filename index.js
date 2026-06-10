@@ -123,11 +123,86 @@ let autoSleepInterval;
 let placedBedPosition = null;
 let isTransitioningSleep = false;
 
-// Scan surrounding area for a valid bed placement site
+// Scan surrounding area for a valid dry land block
+function findDryLand() {
+  const base = bot.entity.position.floored();
+  let closestLand = null;
+  let minDistance = Infinity;
+
+  // Search in a 6x6 square around the bot, looking from 2 blocks below to 2 blocks above
+  for (let dx = -6; dx <= 6; dx++) {
+    for (let dz = -6; dz <= 6; dz++) {
+      for (let dy = -2; dy <= 2; dy++) {
+        const floorPos = base.offset(dx, dy, dz);
+        const floorBlock = bot.blockAt(floorPos);
+        if (!isSolid(floorBlock) || floorBlock.name === 'water' || floorBlock.name === 'flowing_water' || floorBlock.name === 'lava') continue;
+
+        const bodyPos = floorPos.offset(0, 1, 0);
+        const headPos = floorPos.offset(0, 2, 0);
+        const bodyBlock = bot.blockAt(bodyPos);
+        const headBlock = bot.blockAt(headPos);
+
+        if (bodyBlock && bodyBlock.name !== 'water' && bodyBlock.name !== 'flowing_water' && isReplaceable(bodyBlock) &&
+            headBlock && headBlock.name !== 'water' && headBlock.name !== 'flowing_water' && isReplaceable(headBlock)) {
+          
+          const dist = bot.entity.position.distanceTo(floorPos.offset(0.5, 1, 0.5));
+          if (dist < minDistance) {
+            minDistance = dist;
+            closestLand = floorPos.offset(0.5, 1, 0.5); // center of block above floor
+          }
+        }
+      }
+    }
+  }
+  return closestLand;
+}
+
+// Swim and move to dry land
+async function escapeWater() {
+  console.log('Bot is in water. Attempting to get to dry land...');
+  let attempts = 0;
+  
+  while (attempts < 20) { // Max 10 seconds (20 * 500ms)
+    const block = bot.blockAt(bot.entity.position);
+    const inWater = bot.entity.isInWater || (block && (block.name === 'water' || block.name === 'flowing_water'));
+    if (!inWater) {
+      console.log('Bot successfully reached dry land!');
+      bot.setControlState('forward', false);
+      bot.setControlState('jump', false);
+      await new Promise(resolve => setTimeout(resolve, 500)); // Let it settle
+      return true;
+    }
+
+    const landPos = findDryLand();
+    if (landPos) {
+      const dx = landPos.x - bot.entity.position.x;
+      const dz = landPos.z - bot.entity.position.z;
+      const yaw = Math.atan2(-dx, -dz);
+      
+      await bot.look(yaw, 0, true);
+      bot.setControlState('forward', true);
+      bot.setControlState('jump', true);
+    } else {
+      // No dry land found, swim up and move forward in current direction
+      bot.setControlState('forward', true);
+      bot.setControlState('jump', true);
+    }
+
+    await new Promise(resolve => setTimeout(resolve, 500));
+    attempts++;
+  }
+
+  // Stop moving even if we failed to escape
+  bot.setControlState('forward', false);
+  bot.setControlState('jump', false);
+  console.log('Timed out trying to escape water.');
+  return false;
+}
+
+// Scan surrounding area for a valid bed placement site (excluding directly under bot feet)
 function findBedPlacement() {
   const basePos = bot.entity.position.floored().offset(0, -1, 0);
   const searchOffsets = [
-    { dx: 0, dz: 0 }, // Under bot feet
     { dx: 1, dz: 0 },
     { dx: -1, dz: 0 },
     { dx: 0, dz: 1 },
@@ -186,6 +261,16 @@ function startAutoSleep() {
     if (isNight && !bot.isSleeping && !isTransitioningSleep) {
       isTransitioningSleep = true;
       try {
+        // Check if the bot is in water
+        const currentBlock = bot.blockAt(bot.entity.position);
+        const inWater = bot.entity.isInWater || (currentBlock && (currentBlock.name === 'water' || currentBlock.name === 'flowing_water'));
+        if (inWater) {
+          const escaped = await escapeWater();
+          if (!escaped) {
+            throw new Error('Failed to escape water. Skipping sleep this attempt.');
+          }
+        }
+
         // 1. Try to find an existing bed within 5 blocks
         let bedBlock = bot.findBlock({
           matching: (block) => bot.isABed(block),
