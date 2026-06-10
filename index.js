@@ -123,16 +123,16 @@ let autoSleepInterval;
 let placedBedPosition = null;
 let isTransitioningSleep = false;
 
-// Scan surrounding area for a valid dry land block
+// Scan surrounding area for a valid dry land block (up to 15 blocks away)
 function findDryLand() {
   const base = bot.entity.position.floored();
   let closestLand = null;
   let minDistance = Infinity;
 
-  // Search in a 6x6 square around the bot, looking from 2 blocks below to 2 blocks above
-  for (let dx = -6; dx <= 6; dx++) {
-    for (let dz = -6; dz <= 6; dz++) {
-      for (let dy = -2; dy <= 2; dy++) {
+  // Search in a 15x15 horizontal area, from 3 blocks below to 3 blocks above
+  for (let dx = -15; dx <= 15; dx++) {
+    for (let dz = -15; dz <= 15; dz++) {
+      for (let dy = -3; dy <= 3; dy++) {
         const floorPos = base.offset(dx, dy, dz);
         const floorBlock = bot.blockAt(floorPos);
         if (!isSolid(floorBlock) || floorBlock.name === 'water' || floorBlock.name === 'flowing_water' || floorBlock.name === 'lava') continue;
@@ -157,33 +157,68 @@ function findDryLand() {
   return closestLand;
 }
 
-// Swim and move to dry land
+// Swim or fly to dry land
 async function escapeWater() {
   console.log('Bot is in water. Attempting to get to dry land...');
-  let attempts = 0;
   
+  const landPos = findDryLand();
+  if (!landPos) {
+    console.log('No dry land found within 15 blocks.');
+    return false;
+  }
+
+  console.log(`Found dry land at ${landPos}. Moving there...`);
+
+  // 1. Try Creative Flight (Highly reliable since bot is in Creative Mode)
+  if (bot.game.gameMode === 'creative' && bot.creative) {
+    try {
+      console.log('Initiating creative flight to dry land...');
+      await bot.creative.startFlying();
+      await new Promise(resolve => setTimeout(resolve, 200));
+
+      // Fly up 3 blocks first to clear water
+      const upPos = bot.entity.position.offset(0, 3, 0);
+      await bot.creative.flyTo(upPos);
+      await new Promise(resolve => setTimeout(resolve, 300));
+
+      // Fly to the land target (slightly above the floor)
+      const targetPos = new Vec3(landPos.x, landPos.y + 0.5, landPos.z);
+      await bot.creative.flyTo(targetPos);
+      await new Promise(resolve => setTimeout(resolve, 300));
+
+      await bot.creative.stopFlying();
+      console.log('Successfully flew and landed on dry land!');
+      await new Promise(resolve => setTimeout(resolve, 500));
+      return true;
+    } catch (err) {
+      console.warn('Creative flight failed, falling back to swimming:', err.message);
+    }
+  }
+
+  // 2. Fallback: Swim to dry land (Survival mode)
+  let attempts = 0;
   while (attempts < 20) { // Max 10 seconds (20 * 500ms)
     const block = bot.blockAt(bot.entity.position);
     const inWater = bot.entity.isInWater || (block && (block.name === 'water' || block.name === 'flowing_water'));
     if (!inWater) {
-      console.log('Bot successfully reached dry land!');
+      console.log('Bot successfully swam to dry land!');
       bot.setControlState('forward', false);
       bot.setControlState('jump', false);
-      await new Promise(resolve => setTimeout(resolve, 500)); // Let it settle
+      await new Promise(resolve => setTimeout(resolve, 500));
       return true;
     }
 
-    const landPos = findDryLand();
-    if (landPos) {
-      const dx = landPos.x - bot.entity.position.x;
-      const dz = landPos.z - bot.entity.position.z;
+    const currentLandPos = findDryLand();
+    if (currentLandPos) {
+      const dx = currentLandPos.x - bot.entity.position.x;
+      const dz = currentLandPos.z - bot.entity.position.z;
       const yaw = Math.atan2(-dx, -dz);
       
       await bot.look(yaw, 0, true);
       bot.setControlState('forward', true);
-      bot.setControlState('jump', true);
+      // Toggle jump to climb block edges
+      bot.setControlState('jump', attempts % 2 === 0);
     } else {
-      // No dry land found, swim up and move forward in current direction
       bot.setControlState('forward', true);
       bot.setControlState('jump', true);
     }
@@ -192,10 +227,9 @@ async function escapeWater() {
     attempts++;
   }
 
-  // Stop moving even if we failed to escape
   bot.setControlState('forward', false);
   bot.setControlState('jump', false);
-  console.log('Timed out trying to escape water.');
+  console.log('Timed out trying to swim to dry land.');
   return false;
 }
 
