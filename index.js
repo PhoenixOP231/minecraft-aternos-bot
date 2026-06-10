@@ -47,6 +47,11 @@ function createBot() {
     startAntiAFK();
   });
 
+  bot.on('death', () => {
+    console.log('Bot died! Auto-respawning...');
+    bot.respawn();
+  });
+
   bot.on('end', (reason) => {
     botStatus = 'Disconnected';
     console.log(`Bot disconnected: ${reason}. Reconnecting in 15 seconds...`);
