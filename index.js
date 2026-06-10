@@ -25,15 +25,21 @@ let connectionError = null;
 const startTime = Date.now();
 
 function createBot() {
-  console.log(`Connecting to ${settings.ip}:${settings.port} as ${settings.username}...`);
+  console.log(`Connecting to ${settings.ip}:${settings.port} as ${settings.username} (Version: ${settings.version || 'Auto-Detect'})...`);
   botStatus = 'Connecting...';
   connectionError = null;
 
-  bot = mineflayer.createBot({
+  const botOptions = {
     host: settings.ip,
     port: parseInt(settings.port),
     username: settings.username
-  });
+  };
+
+  if (settings.version) {
+    botOptions.version = settings.version;
+  }
+
+  bot = mineflayer.createBot(botOptions);
 
   bot.on('spawn', () => {
     botStatus = 'Connected';
