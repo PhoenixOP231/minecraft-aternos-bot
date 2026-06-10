@@ -45,6 +45,7 @@ function createBot() {
     botStatus = 'Connected';
     console.log('Bot successfully spawned in the game!');
     startAntiAFK();
+    startAutoSleep();
   });
 
   bot.on('death', () => {
@@ -55,6 +56,8 @@ function createBot() {
   bot.on('end', (reason) => {
     botStatus = 'Disconnected';
     console.log(`Bot disconnected: ${reason}. Reconnecting in 15 seconds...`);
+    if (antiAFKInterval) clearInterval(antiAFKInterval);
+    if (autoSleepInterval) clearInterval(autoSleepInterval);
     setTimeout(createBot, 15000);
   });
 
@@ -70,7 +73,7 @@ function startAntiAFK() {
   if (antiAFKInterval) clearInterval(antiAFKInterval);
 
   antiAFKInterval = setInterval(() => {
-    if (botStatus !== 'Connected' || !bot.entity) return;
+    if (botStatus !== 'Connected' || !bot.entity || bot.isSleeping) return;
 
     // Random action selection
     const action = Math.random();
@@ -99,6 +102,44 @@ function startAntiAFK() {
       }, 200);
     }
   }, 10000 + Math.random() * 10000); // Perform random actions every 10-20 seconds
+}
+
+// Auto-sleep behavior at night
+let autoSleepInterval;
+function startAutoSleep() {
+  if (autoSleepInterval) clearInterval(autoSleepInterval);
+
+  autoSleepInterval = setInterval(async () => {
+    if (botStatus !== 'Connected' || !bot.entity) return;
+    if (!bot.time) return; // Make sure time object is loaded
+
+    const timeOfDay = bot.time.timeOfDay;
+    const isNight = timeOfDay >= 12541 && timeOfDay <= 23458;
+
+    if (isNight && !bot.isSleeping) {
+      // Find a bed within 5 blocks
+      const bedBlock = bot.findBlock({
+        matching: (block) => bot.isABed(block),
+        maxDistance: 5
+      });
+
+      if (bedBlock) {
+        try {
+          await bot.sleep(bedBlock);
+          console.log('Bot is now sleeping in bed.');
+        } catch (err) {
+          console.warn('Failed to sleep:', err.message);
+        }
+      }
+    } else if (!isNight && bot.isSleeping) {
+      try {
+        await bot.wake();
+        console.log('Bot woke up.');
+      } catch (err) {
+        console.warn('Failed to wake up:', err.message);
+      }
+    }
+  }, 10000); // Check every 10 seconds
 }
 
 // Initialize mineflayer bot
