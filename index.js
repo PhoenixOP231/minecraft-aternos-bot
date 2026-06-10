@@ -157,6 +157,29 @@ function findDryLand() {
   return closestLand;
 }
 
+// Swim straight up until we reach the surface
+async function swimToSurface() {
+  console.log('Bot is underwater. Swimming to the surface...');
+  bot.setControlState('jump', true);
+  
+  let attempts = 0;
+  while (attempts < 40) { // Max 20 seconds (40 * 500ms)
+    const headBlock = bot.blockAt(bot.entity.position.offset(0, 1.6, 0));
+    if (headBlock && (headBlock.name === 'air' || headBlock.name === 'cave_air' || headBlock.name === 'void_air')) {
+      console.log('Reached the water surface!');
+      bot.setControlState('jump', false);
+      await new Promise(resolve => setTimeout(resolve, 500)); // Let physics settle
+      return true;
+    }
+    await new Promise(resolve => setTimeout(resolve, 500));
+    attempts++;
+  }
+  
+  bot.setControlState('jump', false);
+  console.log('Failed to reach surface or timed out.');
+  return false;
+}
+
 // Swim or fly to dry land
 async function escapeWater() {
   console.log('Bot is in water. Attempting to get to dry land...');
@@ -299,6 +322,8 @@ function startAutoSleep() {
         const currentBlock = bot.blockAt(bot.entity.position);
         const inWater = bot.entity.isInWater || (currentBlock && (currentBlock.name === 'water' || currentBlock.name === 'flowing_water'));
         if (inWater) {
+          // Swim to surface first so we can activate flight or navigate cleanly
+          await swimToSurface();
           const escaped = await escapeWater();
           if (!escaped) {
             throw new Error('Failed to escape water. Skipping sleep this attempt.');
