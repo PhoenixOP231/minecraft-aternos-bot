@@ -54,6 +54,12 @@ function createBot() {
     bot.respawn();
   });
 
+  bot.on('kicked', (reason) => {
+    const cleanReason = typeof reason === 'string' ? reason : JSON.stringify(reason);
+    console.log(`Bot was kicked: ${cleanReason}`);
+    connectionError = `Kicked: ${cleanReason}`;
+  });
+
   bot.on('end', (reason) => {
     botStatus = 'Disconnected';
     console.log(`Bot disconnected: ${reason}. Reconnecting in 15 seconds...`);
